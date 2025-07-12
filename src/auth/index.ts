@@ -39,13 +39,13 @@ export const auth = betterAuth({
           tokenUrl: "https://api.twitter.com/2/oauth2/token",
           userInfoUrl: "https://api.twitter.com/2/users/me",
           redirectURI: "http://localhost:3000/api/auth/oauth2/callback/twitter",
-          scopes: ["tweet.read", "users.read", "offline.access"],
+          scopes: ["tweet.read", "users.read", "offline.access", "users.email"],
           pkce: true,
           // Use Basic authentication for token exchange
           authentication: "basic",
           // Map user data and provide a fallback email
           getUserInfo: async (token: any) => {
-            const response = await fetch("https://api.twitter.com/2/users/me", {
+            const response = await fetch("https://api.twitter.com/2/users/me?user.fields=profile_image_url,confirmed_email", {
               headers: {
                 Authorization: `Bearer ${token.accessToken}`,
               },
@@ -58,10 +58,9 @@ export const auth = betterAuth({
             const data = await response.json();
             const user = data.data || data;
             
-            // Twitter doesn't provide email, so we generate a placeholder
             return {
               id: user.id,
-              email: `${user.username}@twitter.local`,
+              email: user.confirmed_email || `${user.username}@twitter.local`,
               name: user.name,
               image: user.profile_image_url,
               emailVerified: false,
