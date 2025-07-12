@@ -20,9 +20,39 @@ app.use(
   })
 );
 
-// Mount better-auth routes
-app.all("/api/auth/*", (c) => {
-  return auth.handler(c.req.raw);
+// Mount better-auth routes with debugging
+app.all("/api/auth/*", async (c) => {
+  const url = new URL(c.req.url);
+  console.log("[Auth Debug] Request:", {
+    method: c.req.method,
+    path: url.pathname,
+    params: Object.fromEntries(url.searchParams),
+    headers: {
+      referer: c.req.header("referer"),
+      origin: c.req.header("origin"),
+    }
+  });
+
+  try {
+    const response = await auth.handler(c.req.raw);
+    console.log("[Auth Debug] Response status:", response.status);
+    
+    // Log error responses
+    if (response.status >= 400) {
+      const clonedResponse = response.clone();
+      try {
+        const body = await clonedResponse.text();
+        console.error("[Auth Debug] Error response body:", body);
+      } catch (e) {
+        console.error("[Auth Debug] Could not read error response body");
+      }
+    }
+    
+    return response;
+  } catch (error) {
+    console.error("[Auth Debug] Handler error:", error);
+    throw error;
+  }
 });
 
 // Example: Public endpoint
