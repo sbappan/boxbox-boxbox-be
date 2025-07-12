@@ -184,7 +184,8 @@ app.get("/api/reviews", async (c) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     const currentUserId = session?.user?.id;
 
-    const baseQuery = db
+    // Build the optimized query with like counts and user like status
+    const reviewsQuery = db
       .select({
         id: raceReviews.id,
         rating: raceReviews.rating,
@@ -194,51 +195,42 @@ app.get("/api/reviews", async (c) => {
         authorId: user.id,
         avatarUrl: user.image,
         raceId: raceReviews.raceId,
+        likeCount: sql<number>`count(distinct ${reviewLikes.id})::int`,
+        isLikedByUser: currentUserId
+          ? sql<boolean>`bool_or(${reviewLikes.userId} = ${currentUserId})`
+          : sql<boolean>`false`,
       })
       .from(raceReviews)
       .innerJoin(user, eq(raceReviews.userId, user.id))
+      .leftJoin(reviewLikes, eq(reviewLikes.reviewId, raceReviews.id))
+      .groupBy(
+        raceReviews.id,
+        raceReviews.rating,
+        raceReviews.comment,
+        raceReviews.createdAt,
+        user.name,
+        user.id,
+        user.image,
+        raceReviews.raceId
+      )
       .orderBy(desc(raceReviews.createdAt));
 
     const reviews = raceId
-      ? await baseQuery.where(eq(raceReviews.raceId, raceId))
-      : await baseQuery;
+      ? await reviewsQuery.where(eq(raceReviews.raceId, raceId))
+      : await reviewsQuery;
 
-    // Get like counts and check if current user liked each review
-    const reviewsWithLikes = await Promise.all(
-      reviews.map(async (review) => {
-        // Get like count
-        const [likeCountResult] = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(reviewLikes)
-          .where(eq(reviewLikes.reviewId, review.id));
-        
-        const likeCount = Number(likeCountResult.count);
-
-        // Check if current user liked this review
-        let isLikedByUser = false;
-        if (currentUserId) {
-          const userLike = await db.query.reviewLikes.findFirst({
-            where: and(
-              eq(reviewLikes.userId, currentUserId),
-              eq(reviewLikes.reviewId, review.id)
-            ),
-          });
-          isLikedByUser = !!userLike;
-        }
-
-        return {
-          id: review.id,
-          author: review.author || "Anonymous",
-          avatarUrl: review.avatarUrl || "",
-          rating: review.rating,
-          text: review.comment || "",
-          date: review.createdAt.toISOString(),
-          raceId: review.raceId,
-          likeCount,
-          isLikedByUser,
-        };
-      })
-    );
+    // Transform the results to match frontend Review type
+    const reviewsWithLikes = reviews.map((review) => ({
+      id: review.id,
+      author: review.author || "Anonymous",
+      avatarUrl: review.avatarUrl || "",
+      rating: review.rating,
+      text: review.comment || "",
+      date: review.createdAt.toISOString(),
+      raceId: review.raceId,
+      likeCount: review.likeCount || 0,
+      isLikedByUser: review.isLikedByUser || false,
+    }));
 
     return c.json(reviewsWithLikes);
   } catch (error) {
@@ -264,34 +256,29 @@ app.get("/api/reviews/:id", async (c) => {
         authorId: user.id,
         avatarUrl: user.image,
         raceId: raceReviews.raceId,
+        likeCount: sql<number>`count(distinct ${reviewLikes.id})::int`,
+        isLikedByUser: currentUserId
+          ? sql<boolean>`bool_or(${reviewLikes.userId} = ${currentUserId})`
+          : sql<boolean>`false`,
       })
       .from(raceReviews)
       .innerJoin(user, eq(raceReviews.userId, user.id))
+      .leftJoin(reviewLikes, eq(reviewLikes.reviewId, raceReviews.id))
       .where(eq(raceReviews.id, reviewId))
+      .groupBy(
+        raceReviews.id,
+        raceReviews.rating,
+        raceReviews.comment,
+        raceReviews.createdAt,
+        user.name,
+        user.id,
+        user.image,
+        raceReviews.raceId
+      )
       .limit(1);
 
     if (!review) {
       return c.json({ error: "Review not found" }, 404);
-    }
-
-    // Get like count
-    const [likeCountResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(reviewLikes)
-      .where(eq(reviewLikes.reviewId, review.id));
-    
-    const likeCount = Number(likeCountResult.count);
-
-    // Check if current user liked this review
-    let isLikedByUser = false;
-    if (currentUserId) {
-      const userLike = await db.query.reviewLikes.findFirst({
-        where: and(
-          eq(reviewLikes.userId, currentUserId),
-          eq(reviewLikes.reviewId, review.id)
-        ),
-      });
-      isLikedByUser = !!userLike;
     }
 
     // Transform to match frontend Review type
@@ -303,8 +290,8 @@ app.get("/api/reviews/:id", async (c) => {
       text: review.comment || "",
       date: review.createdAt.toISOString(),
       raceId: review.raceId,
-      likeCount,
-      isLikedByUser,
+      likeCount: review.likeCount || 0,
+      isLikedByUser: review.isLikedByUser || false,
     };
 
     return c.json(transformedReview);
@@ -324,7 +311,7 @@ app.post("/api/reviews", async (c) => {
 
   try {
     const body = await c.req.json();
-    const { author, text, rating, raceId } = body;
+    const { text, rating, raceId } = body;
 
     // Validate required fields
     if (!text || typeof rating !== "number" || !raceId) {
