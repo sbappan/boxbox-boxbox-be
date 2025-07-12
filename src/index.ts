@@ -4,8 +4,8 @@ import { cors } from "hono/cors";
 import { env } from "./config/env.js";
 import { auth } from "./auth/index.js";
 import { db } from "./db/index.js";
-import { user, races, raceReviews } from "./db/schema/index.js";
-import { eq, and, desc } from "drizzle-orm";
+import { user, races, raceReviews, reviewLikes } from "./db/schema/index.js";
+import { eq, and, desc, sql } from "drizzle-orm";
 
 const app = new Hono();
 
@@ -181,6 +181,8 @@ app.get("/health", async (c) => {
 app.get("/api/reviews", async (c) => {
   try {
     const raceId = c.req.query("raceId");
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const currentUserId = session?.user?.id;
 
     const baseQuery = db
       .select({
@@ -201,18 +203,44 @@ app.get("/api/reviews", async (c) => {
       ? await baseQuery.where(eq(raceReviews.raceId, raceId))
       : await baseQuery;
 
-    // Transform to match frontend Review type
-    const transformedReviews = reviews.map((review) => ({
-      id: review.id,
-      author: review.author || "Anonymous",
-      avatarUrl: review.avatarUrl || "",
-      rating: review.rating,
-      text: review.comment || "",
-      date: review.createdAt.toISOString(),
-      raceId: review.raceId,
-    }));
+    // Get like counts and check if current user liked each review
+    const reviewsWithLikes = await Promise.all(
+      reviews.map(async (review) => {
+        // Get like count
+        const [likeCountResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(reviewLikes)
+          .where(eq(reviewLikes.reviewId, review.id));
+        
+        const likeCount = Number(likeCountResult.count);
 
-    return c.json(transformedReviews);
+        // Check if current user liked this review
+        let isLikedByUser = false;
+        if (currentUserId) {
+          const userLike = await db.query.reviewLikes.findFirst({
+            where: and(
+              eq(reviewLikes.userId, currentUserId),
+              eq(reviewLikes.reviewId, review.id)
+            ),
+          });
+          isLikedByUser = !!userLike;
+        }
+
+        return {
+          id: review.id,
+          author: review.author || "Anonymous",
+          avatarUrl: review.avatarUrl || "",
+          rating: review.rating,
+          text: review.comment || "",
+          date: review.createdAt.toISOString(),
+          raceId: review.raceId,
+          likeCount,
+          isLikedByUser,
+        };
+      })
+    );
+
+    return c.json(reviewsWithLikes);
   } catch (error) {
     console.error("Failed to fetch reviews:", error);
     return c.json({ error: "Failed to fetch reviews" }, 500);
@@ -222,6 +250,8 @@ app.get("/api/reviews", async (c) => {
 // Get a specific review by ID
 app.get("/api/reviews/:id", async (c) => {
   const reviewId = c.req.param("id");
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  const currentUserId = session?.user?.id;
 
   try {
     const [review] = await db
@@ -244,6 +274,26 @@ app.get("/api/reviews/:id", async (c) => {
       return c.json({ error: "Review not found" }, 404);
     }
 
+    // Get like count
+    const [likeCountResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(reviewLikes)
+      .where(eq(reviewLikes.reviewId, review.id));
+    
+    const likeCount = Number(likeCountResult.count);
+
+    // Check if current user liked this review
+    let isLikedByUser = false;
+    if (currentUserId) {
+      const userLike = await db.query.reviewLikes.findFirst({
+        where: and(
+          eq(reviewLikes.userId, currentUserId),
+          eq(reviewLikes.reviewId, review.id)
+        ),
+      });
+      isLikedByUser = !!userLike;
+    }
+
     // Transform to match frontend Review type
     const transformedReview = {
       id: review.id,
@@ -253,6 +303,8 @@ app.get("/api/reviews/:id", async (c) => {
       text: review.comment || "",
       date: review.createdAt.toISOString(),
       raceId: review.raceId,
+      likeCount,
+      isLikedByUser,
     };
 
     return c.json(transformedReview);
@@ -494,6 +546,105 @@ app.delete("/api/reviews/:id", async (c) => {
   } catch (error) {
     console.error("Failed to delete review:", error);
     return c.json({ error: "Failed to delete review" }, 500);
+  }
+});
+
+// POST /api/reviews/:id/like - Like a review
+app.post("/api/reviews/:id/like", async (c) => {
+  try {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (!session?.user) {
+      return c.json({ error: "Authentication required" }, 401);
+    }
+
+    const reviewId = c.req.param("id");
+
+    // Check if the review exists
+    const review = await db.query.raceReviews.findFirst({
+      where: eq(raceReviews.id, reviewId),
+    });
+
+    if (!review) {
+      return c.json({ error: "Review not found" }, 404);
+    }
+
+    // Check if user already liked this review
+    const existingLike = await db.query.reviewLikes.findFirst({
+      where: and(
+        eq(reviewLikes.userId, session.user.id),
+        eq(reviewLikes.reviewId, reviewId)
+      ),
+    });
+
+    if (existingLike) {
+      return c.json({ error: "Review already liked" }, 400);
+    }
+
+    // Create the like
+    await db.insert(reviewLikes).values({
+      userId: session.user.id,
+      reviewId: reviewId,
+    });
+
+    // Get updated like count
+    const likeCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(reviewLikes)
+      .where(eq(reviewLikes.reviewId, reviewId));
+
+    return c.json({ 
+      message: "Review liked successfully",
+      likeCount: Number(likeCount[0].count)
+    });
+  } catch (error) {
+    console.error("Failed to like review:", error);
+    return c.json({ error: "Failed to like review" }, 500);
+  }
+});
+
+// DELETE /api/reviews/:id/like - Unlike a review
+app.delete("/api/reviews/:id/like", async (c) => {
+  try {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    if (!session?.user) {
+      return c.json({ error: "Authentication required" }, 401);
+    }
+
+    const reviewId = c.req.param("id");
+
+    // Check if the like exists
+    const existingLike = await db.query.reviewLikes.findFirst({
+      where: and(
+        eq(reviewLikes.userId, session.user.id),
+        eq(reviewLikes.reviewId, reviewId)
+      ),
+    });
+
+    if (!existingLike) {
+      return c.json({ error: "Review not liked" }, 404);
+    }
+
+    // Delete the like
+    await db.delete(reviewLikes).where(
+      and(
+        eq(reviewLikes.userId, session.user.id),
+        eq(reviewLikes.reviewId, reviewId)
+      )
+    );
+
+    // Get updated like count
+    const likeCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(reviewLikes)
+      .where(eq(reviewLikes.reviewId, reviewId));
+
+    return c.json({ 
+      message: "Review unliked successfully",
+      likeCount: Number(likeCount[0].count)
+    });
+  } catch (error) {
+    console.error("Failed to unlike review:", error);
+    return c.json({ error: "Failed to unlike review" }, 500);
   }
 });
 
