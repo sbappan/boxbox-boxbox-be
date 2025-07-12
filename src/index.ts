@@ -191,20 +191,19 @@ app.delete("/api/user/:id", async (c) => {
   }
 
   try {
-    // Check if user exists
-    const [existingUser] = await db
-      .select({ id: user.id })
-      .from(user)
+    // Delete the user and return deleted rows (cascade delete will handle related records)
+    const deletedUsers = await db
+      .delete(user)
       .where(eq(user.id, userId))
-      .limit(1);
+      .returning({ id: user.id });
 
-    if (!existingUser) {
+    // Check if any rows were deleted
+    if (deletedUsers.length === 0) {
       return c.json({ error: "User not found" }, 404);
     }
 
-    // Delete the user (cascade delete will handle related records)
-    await db.delete(user).where(eq(user.id, userId));
-
+    // for Audit Trail purposes
+    console.log(`Account deleted: userId=${userId}, deletedAt=${new Date().toISOString()}`);
     return c.json({ message: "Account deleted successfully" });
   } catch (error) {
     console.error("Failed to delete account:", error);
