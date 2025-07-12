@@ -50,7 +50,7 @@ export const raceReviews = pgTable(
   ]
 );
 
-export const raceReviewsRelations = relations(raceReviews, ({ one }) => ({
+export const raceReviewsRelations = relations(raceReviews, ({ one, many }) => ({
   user: one(user, {
     fields: [raceReviews.userId],
     references: [user.id],
@@ -59,10 +59,40 @@ export const raceReviewsRelations = relations(raceReviews, ({ one }) => ({
     fields: [raceReviews.raceId],
     references: [races.id],
   }),
+  likes: many(reviewLikes),
 }));
 
 export const racesRelations = relations(races, ({ many }) => ({
   reviews: many(raceReviews),
+}));
+
+export const reviewLikes = pgTable(
+  "review_likes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    reviewId: uuid("reviewId")
+      .notNull()
+      .references(() => raceReviews.id, { onDelete: "cascade" }),
+    createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Ensure a user can only like a review once
+    unique("user_review_unique").on(table.userId, table.reviewId),
+  ]
+);
+
+export const reviewLikesRelations = relations(reviewLikes, ({ one }) => ({
+  user: one(user, {
+    fields: [reviewLikes.userId],
+    references: [user.id],
+  }),
+  review: one(raceReviews, {
+    fields: [reviewLikes.reviewId],
+    references: [raceReviews.id],
+  }),
 }));
 
 // Type exports for TypeScript
@@ -70,3 +100,5 @@ export type Race = typeof races.$inferSelect;
 export type NewRace = typeof races.$inferInsert;
 export type RaceReview = typeof raceReviews.$inferSelect;
 export type NewRaceReview = typeof raceReviews.$inferInsert;
+export type ReviewLike = typeof reviewLikes.$inferSelect;
+export type NewReviewLike = typeof reviewLikes.$inferInsert;
