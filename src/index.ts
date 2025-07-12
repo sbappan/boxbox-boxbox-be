@@ -175,6 +175,43 @@ app.get("/api/user/:id", async (c) => {
   }
 });
 
+// Delete user account (protected)
+app.delete("/api/user/:id", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const userId = c.req.param("id");
+
+  // Users can only delete their own account
+  if (session.user.id !== userId) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  try {
+    // Check if user exists
+    const [existingUser] = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    if (!existingUser) {
+      return c.json({ error: "User not found" }, 404);
+    }
+
+    // Delete the user (cascade delete will handle related records)
+    await db.delete(user).where(eq(user.id, userId));
+
+    return c.json({ message: "Account deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete account:", error);
+    return c.json({ error: "Failed to delete account" }, 500);
+  }
+});
+
 // Health check endpoint
 app.get("/health", async (c) => {
   try {
