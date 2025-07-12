@@ -7,6 +7,15 @@ import { db } from "./db/index.js";
 import { user, races, raceReviews, reviewLikes } from "./db/schema/index.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 
+// Helper function to get review like count
+async function getReviewLikeCount(reviewId: string): Promise<number> {
+  const [result] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(reviewLikes)
+    .where(eq(reviewLikes.reviewId, reviewId));
+  return Number(result.count);
+}
+
 const app = new Hono();
 
 // Apply CORS middleware with proper configuration for better-auth
@@ -537,6 +546,7 @@ app.delete("/api/reviews/:id", async (c) => {
 });
 
 // POST /api/reviews/:id/like - Like a review
+// User should be able to like their own review - this is a common feature in some applications like Twitter (X) 
 app.post("/api/reviews/:id/like", async (c) => {
   try {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
@@ -574,14 +584,11 @@ app.post("/api/reviews/:id/like", async (c) => {
     });
 
     // Get updated like count
-    const likeCount = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(reviewLikes)
-      .where(eq(reviewLikes.reviewId, reviewId));
+    const likeCount = await getReviewLikeCount(reviewId);
 
     return c.json({ 
       message: "Review liked successfully",
-      likeCount: Number(likeCount[0].count)
+      likeCount: likeCount
     });
   } catch (error) {
     console.error("Failed to like review:", error);
@@ -620,14 +627,11 @@ app.delete("/api/reviews/:id/like", async (c) => {
     );
 
     // Get updated like count
-    const likeCount = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(reviewLikes)
-      .where(eq(reviewLikes.reviewId, reviewId));
+    const likeCount = await getReviewLikeCount(reviewId);
 
     return c.json({ 
       message: "Review unliked successfully",
-      likeCount: Number(likeCount[0].count)
+      likeCount: likeCount
     });
   } catch (error) {
     console.error("Failed to unlike review:", error);
