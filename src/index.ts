@@ -68,8 +68,14 @@ app.get("/", (c) => {
   });
 });
 
-// Get all races (public)
+// Get all races (protected)
 app.get("/api/races", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   try {
     const allRaces = await db
       .select({
@@ -87,8 +93,14 @@ app.get("/api/races", async (c) => {
   }
 });
 
-// Get race by slug (public)
+// Get race by slug (protected)
 app.get("/api/races/:slug", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   const slug = c.req.param("slug");
 
   try {
