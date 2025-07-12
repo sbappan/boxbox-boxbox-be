@@ -13,7 +13,6 @@ build/
 *.tsbuildinfo
 
 # Database
-drizzle/
 *.db
 *.db-journal
 *.sqlite
