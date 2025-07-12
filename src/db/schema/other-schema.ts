@@ -13,10 +13,11 @@ import { relations, sql } from "drizzle-orm";
 import { user } from "./auth-schema.js";
 
 export const races = pgTable("race", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  slug: varchar("slug", { length: 255 }).notNull().unique(),
-  name: varchar("name", { length: 255 }).notNull(),
-  latestRace: boolean("latestRace").notNull().default(false),
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: varchar("slug", { length: 255 }).notNull().unique(),
+    name: varchar("name", { length: 255 }).notNull(),
+    latestRace: boolean("latestRace").default(false).notNull(),
+    highlightsUrl: text("highlightsUrl")
 });
 
 export const raceReviews = pgTable(

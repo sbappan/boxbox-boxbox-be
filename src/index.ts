@@ -92,6 +92,7 @@ app.get("/api/races", async (c) => {
         slug: races.slug,
         name: races.name,
         latestRace: races.latestRace,
+        highlightsUrl: races.highlightsUrl,
       })
       .from(races);
 
@@ -119,6 +120,7 @@ app.get("/api/races/:slug", async (c) => {
         slug: races.slug,
         name: races.name,
         latestRace: races.latestRace,
+        highlightsUrl: races.highlightsUrl,
       })
       .from(races)
       .where(eq(races.slug, slug))
