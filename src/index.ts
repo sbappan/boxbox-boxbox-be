@@ -1,7 +1,8 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { env } from "./config/env.js";
+import { secureHeaders } from "hono/secure-headers";
+import { env, getTrustedOrigins } from "./config/env.js";
 import { auth } from "./auth/index.js";
 import { db } from "./db/index.js";
 import { user, races, raceReviews, reviewLikes } from "./db/schema/index.js";
@@ -18,11 +19,62 @@ async function getReviewLikeCount(reviewId: string): Promise<number> {
 
 const app = new Hono();
 
-// Apply CORS middleware with proper configuration for better-auth
+// HTTPS enforcement middleware for production
+if (env.NODE_ENV === "production") {
+  app.use("*", async (c, next) => {
+    const proto = c.req.header("x-forwarded-proto") || "http";
+    if (proto !== "https") {
+      const httpsUrl = `https://${c.req.header("host")}${c.req.url.replace(/^https?:\/\/[^\/]+/, "")}`;
+      return c.redirect(httpsUrl, 301);
+    }
+    await next();
+  });
+}
+
+// Security headers middleware
+if (env.NODE_ENV === "production") {
+  app.use("*", secureHeaders({
+    contentSecurityPolicy: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+    crossOriginEmbedderPolicy: true,
+    crossOriginOpenerPolicy: true,
+    crossOriginResourcePolicy: "cross-origin",
+    originAgentCluster: true,
+    referrerPolicy: "strict-origin-when-cross-origin",
+    strictTransportSecurity: "max-age=31536000; includeSubDomains",
+    xContentTypeOptions: true,
+    xDnsPrefetchControl: true,
+    xDownloadOptions: true,
+    xFrameOptions: "DENY",
+    xPermittedCrossDomainPolicies: false,
+    xXssProtection: "1; mode=block",
+  }));
+} else {
+  // Basic security headers for development
+  app.use("*", secureHeaders({
+    xContentTypeOptions: true,
+    xDnsPrefetchControl: true,
+    xDownloadOptions: true,
+    xFrameOptions: "DENY",
+    xPermittedCrossDomainPolicies: false,
+    xXssProtection: "1; mode=block",
+  }));
+}
+
+// Apply CORS middleware with environment-aware configuration
 app.use(
   "*",
   cors({
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    origin: getTrustedOrigins(),
     credentials: true,
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization", "Cookie"],

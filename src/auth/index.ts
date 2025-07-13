@@ -3,7 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { genericOAuth } from "better-auth/plugins";
 
 import { db } from "../db/index.js";
-import { env } from "../config/env.js";
+import { env, getTrustedOrigins } from "../config/env.js";
 import * as schema from "../db/schema/index.js";
 
 export const auth = betterAuth({
@@ -11,12 +11,12 @@ export const auth = betterAuth({
     provider: "pg",
     schema,
   }),
-  // Allow requests from the frontend development server
-  trustedOrigins: ["http://localhost:5173"],
-  // Add the baseURL and redirect configuration
-  baseURL: "http://localhost:3000",
-  // Configure redirect URLs for OAuth success/error
-  redirectTo: "http://localhost:5173",
+  // Environment-aware trusted origins configuration
+  trustedOrigins: getTrustedOrigins(),
+  // Environment-aware base URL configuration
+  baseURL: env.BETTER_AUTH_URL,
+  // Environment-aware redirect configuration
+  redirectTo: env.FRONTEND_URL,
   emailAndPassword: {
     enabled: true,
   },
@@ -24,8 +24,8 @@ export const auth = betterAuth({
     google: {
       clientId: env.GOOGLE_CLIENT_ID as string,
       clientSecret: env.GOOGLE_CLIENT_SECRET as string,
-      // Add redirect URI configuration
-      redirectURI: "http://localhost:3000/api/auth/callback/google",
+      // Environment-aware redirect URI configuration
+      redirectURI: `${env.BETTER_AUTH_URL}/api/auth/callback/google`,
     },
   },
   plugins: [
@@ -38,7 +38,7 @@ export const auth = betterAuth({
           authorizationUrl: "https://twitter.com/i/oauth2/authorize",
           tokenUrl: "https://api.twitter.com/2/oauth2/token",
           userInfoUrl: "https://api.twitter.com/2/users/me",
-          redirectURI: "http://localhost:3000/api/auth/oauth2/callback/twitter",
+          redirectURI: `${env.BETTER_AUTH_URL}/api/auth/oauth2/callback/twitter`,
           scopes: ["tweet.read", "users.read", "offline.access", "users.email"],
           pkce: true,
           // Use Basic authentication for token exchange
@@ -83,18 +83,18 @@ export const auth = betterAuth({
       },
     },
   },
-  // Configure where to redirect after successful authentication
+  // Environment-aware page redirects
   pages: {
-    signIn: "http://localhost:5173",
-    signUp: "http://localhost:5173",
-    error: "http://localhost:5173",
+    signIn: env.FRONTEND_URL,
+    signUp: env.FRONTEND_URL,
+    error: env.FRONTEND_URL,
   },
   advanced: {
     database: {
       generateId: false,
     },
-    // Override default redirect behavior
-    defaultRedirectURL: "http://localhost:5173",
+    // Environment-aware default redirect
+    defaultRedirectURL: env.FRONTEND_URL,
   },
 });
 
