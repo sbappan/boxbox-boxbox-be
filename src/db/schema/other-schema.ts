@@ -8,6 +8,7 @@ import {
   varchar,
   unique,
   check,
+  index,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { user } from "./auth-schema.js";
@@ -96,6 +97,45 @@ export const reviewLikesRelations = relations(reviewLikes, ({ one }) => ({
   }),
 }));
 
+// Follows table for user following functionality
+export const follows = pgTable(
+  "follows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    followingId: uuid("followingId")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Ensure a user can only follow another user once
+    unique("user_following_unique").on(table.userId, table.followingId),
+    // Prevent users from following themselves
+    check(
+      "no_self_follow",
+      sql`${table.userId} != ${table.followingId}`
+    ),
+    // Index for finding all users that a user follows (userId lookup)
+    index("follows_user_id_idx").on(table.userId),
+    // Index for finding all followers of a user (followingId lookup)
+    index("follows_following_id_idx").on(table.followingId),
+  ]
+);
+
+export const followsRelations = relations(follows, ({ one }) => ({
+  user: one(user, {
+    fields: [follows.userId],
+    references: [user.id],
+  }),
+  following: one(user, {
+    fields: [follows.followingId],
+    references: [user.id],
+  }),
+}));
+
 // Type exports for TypeScript
 export type Race = typeof races.$inferSelect;
 export type NewRace = typeof races.$inferInsert;
@@ -103,3 +143,5 @@ export type RaceReview = typeof raceReviews.$inferSelect;
 export type NewRaceReview = typeof raceReviews.$inferInsert;
 export type ReviewLike = typeof reviewLikes.$inferSelect;
 export type NewReviewLike = typeof reviewLikes.$inferInsert;
+export type Follow = typeof follows.$inferSelect;
+export type NewFollow = typeof follows.$inferInsert;
