@@ -4,8 +4,8 @@ import { cors } from "hono/cors";
 import { env } from "./config/env.js";
 import { auth } from "./auth/index.js";
 import { db } from "./db/index.js";
-import { user, races, raceReviews, reviewLikes } from "./db/schema/index.js";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { user, races, raceReviews, reviewLikes, follows } from "./db/schema/index.js";
+import { eq, and, desc, sql, count } from "drizzle-orm";
 
 // Helper function to get review like count
 async function getReviewLikeCount(reviewId: string): Promise<number> {
@@ -137,7 +137,7 @@ app.get("/api/races/:slug", async (c) => {
   }
 });
 
-// Example: Get user profile (protected)
+// Get user profile (protected)
 app.get("/api/user/:id", async (c) => {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
 
@@ -146,11 +146,7 @@ app.get("/api/user/:id", async (c) => {
   }
 
   const userId = c.req.param("id");
-
-  // Users can only view their own profile (you can modify this logic)
-  if (session.user.id !== userId) {
-    return c.json({ error: "Forbidden" }, 403);
-  }
+  const currentUserId = session.user.id;
 
   try {
     const [userProfile] = await db
@@ -159,6 +155,8 @@ app.get("/api/user/:id", async (c) => {
         email: user.email,
         name: user.name,
         image: user.image,
+        followerCount: user.followerCount,
+        followingCount: user.followingCount,
         createdAt: user.createdAt,
       })
       .from(user)
@@ -169,8 +167,39 @@ app.get("/api/user/:id", async (c) => {
       return c.json({ error: "User not found" }, 404);
     }
 
-    return c.json({ user: userProfile });
+    // Check if current user is following this user (only if viewing someone else's profile)
+    let isFollowing = false;
+    if (currentUserId !== userId) {
+      const [followRelation] = await db
+        .select({ id: follows.id })
+        .from(follows)
+        .where(
+          and(
+            eq(follows.userId, currentUserId),
+            eq(follows.followingId, userId)
+          )
+        )
+        .limit(1);
+      
+      isFollowing = !!followRelation;
+    }
+
+    // For own profile, include email. For others, exclude email for privacy
+    const responseData = currentUserId === userId 
+      ? { user: { ...userProfile, isFollowing } }
+      : { user: { 
+          id: userProfile.id,
+          name: userProfile.name,
+          image: userProfile.image,
+          followerCount: userProfile.followerCount,
+          followingCount: userProfile.followingCount,
+          createdAt: userProfile.createdAt,
+          isFollowing
+        }};
+
+    return c.json(responseData);
   } catch (error) {
+    console.error("Failed to fetch user profile:", error);
     return c.json({ error: "Failed to fetch user" }, 500);
   }
 });
@@ -208,6 +237,440 @@ app.delete("/api/user/:id", async (c) => {
   } catch (error) {
     console.error("Failed to delete account:", error);
     return c.json({ error: "Failed to delete account" }, 500);
+  }
+});
+
+// Follow user endpoint (protected)
+app.post("/api/users/:id/follow", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const userIdToFollow = c.req.param("id");
+  const currentUserId = session.user.id;
+
+  try {
+    // Validate that user isn't trying to follow themselves
+    if (currentUserId === userIdToFollow) {
+      return c.json({ error: "Cannot follow yourself" }, 400);
+    }
+
+    // Check if the user to follow exists
+    const [targetUser] = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.id, userIdToFollow))
+      .limit(1);
+
+    if (!targetUser) {
+      return c.json({ error: "User not found" }, 404);
+    }
+
+    // Check if already following
+    const [existingFollow] = await db
+      .select({ id: follows.id })
+      .from(follows)
+      .where(
+        and(
+          eq(follows.userId, currentUserId),
+          eq(follows.followingId, userIdToFollow)
+        )
+      )
+      .limit(1);
+
+    if (existingFollow) {
+      return c.json({ error: "Already following this user" }, 409);
+    }
+
+    // Create the follow relationship
+    await db.insert(follows).values({
+      userId: currentUserId,
+      followingId: userIdToFollow,
+    });
+
+    // Update follower counts
+    await db
+      .update(user)
+      .set({ followingCount: sql`${user.followingCount} + 1` })
+      .where(eq(user.id, currentUserId));
+
+    await db
+      .update(user)
+      .set({ followerCount: sql`${user.followerCount} + 1` })
+      .where(eq(user.id, userIdToFollow));
+
+    return c.json({ message: "Successfully followed user" }, 201);
+  } catch (error) {
+    console.error("Failed to follow user:", error);
+    return c.json({ error: "Failed to follow user" }, 500);
+  }
+});
+
+// Unfollow user endpoint (protected)
+app.delete("/api/users/:id/follow", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const userIdToUnfollow = c.req.param("id");
+  const currentUserId = session.user.id;
+
+  try {
+    // Check if the follow relationship exists
+    const [existingFollow] = await db
+      .select({ id: follows.id })
+      .from(follows)
+      .where(
+        and(
+          eq(follows.userId, currentUserId),
+          eq(follows.followingId, userIdToUnfollow)
+        )
+      )
+      .limit(1);
+
+    if (!existingFollow) {
+      return c.json({ error: "Not following this user" }, 404);
+    }
+
+    // Delete the follow relationship
+    await db
+      .delete(follows)
+      .where(
+        and(
+          eq(follows.userId, currentUserId),
+          eq(follows.followingId, userIdToUnfollow)
+        )
+      );
+
+    // Update follower counts
+    await db
+      .update(user)
+      .set({ followingCount: sql`${user.followingCount} - 1` })
+      .where(eq(user.id, currentUserId));
+
+    await db
+      .update(user)
+      .set({ followerCount: sql`${user.followerCount} - 1` })
+      .where(eq(user.id, userIdToUnfollow));
+
+    return c.json({ message: "Successfully unfollowed user" });
+  } catch (error) {
+    console.error("Failed to unfollow user:", error);
+    return c.json({ error: "Failed to unfollow user" }, 500);
+  }
+});
+
+// Get user's followers (protected)
+app.get("/api/users/:id/followers", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const userId = c.req.param("id");
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const offset = (page - 1) * limit;
+
+  try {
+    // Check if the user exists
+    const [targetUser] = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    if (!targetUser) {
+      return c.json({ error: "User not found" }, 404);
+    }
+
+    // Get followers with pagination
+    const followers = await db
+      .select({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        image: user.image,
+        followerCount: user.followerCount,
+        followingCount: user.followingCount,
+        followedAt: follows.createdAt,
+      })
+      .from(follows)
+      .innerJoin(user, eq(follows.userId, user.id))
+      .where(eq(follows.followingId, userId))
+      .orderBy(desc(follows.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count for pagination metadata
+    const [totalResult] = await db
+      .select({ total: count() })
+      .from(follows)
+      .where(eq(follows.followingId, userId));
+
+    const total = Number(totalResult.total);
+    const totalPages = Math.ceil(total / limit);
+
+    return c.json({
+      followers,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch followers:", error);
+    return c.json({ error: "Failed to fetch followers" }, 500);
+  }
+});
+
+// Get users that a user is following (protected)
+app.get("/api/users/:id/following", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const userId = c.req.param("id");
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const offset = (page - 1) * limit;
+
+  try {
+    // Check if the user exists
+    const [targetUser] = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    if (!targetUser) {
+      return c.json({ error: "User not found" }, 404);
+    }
+
+    // Get following with pagination
+    const following = await db
+      .select({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        image: user.image,
+        followerCount: user.followerCount,
+        followingCount: user.followingCount,
+        followedAt: follows.createdAt,
+      })
+      .from(follows)
+      .innerJoin(user, eq(follows.followingId, user.id))
+      .where(eq(follows.userId, userId))
+      .orderBy(desc(follows.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count for pagination metadata
+    const [totalResult] = await db
+      .select({ total: count() })
+      .from(follows)
+      .where(eq(follows.userId, userId));
+
+    const total = Number(totalResult.total);
+    const totalPages = Math.ceil(total / limit);
+
+    return c.json({
+      following,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch following:", error);
+    return c.json({ error: "Failed to fetch following" }, 500);
+  }
+});
+
+// Get personalized feed of reviews from followed users (protected)
+app.get("/api/feed/following", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const currentUserId = session.user.id;
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const offset = (page - 1) * limit;
+
+  try {
+    // Get reviews from users that the current user follows
+    const reviews = await db
+      .select({
+        id: raceReviews.id,
+        rating: raceReviews.rating,
+        comment: raceReviews.comment,
+        createdAt: raceReviews.createdAt,
+        author: user.name,
+        authorId: user.id,
+        avatarUrl: user.image,
+        raceId: raceReviews.raceId,
+        raceName: races.name,
+        raceSlug: races.slug,
+        likeCount: sql<number>`count(distinct ${reviewLikes.id})::int`,
+        isLikedByUser: sql<boolean>`bool_or(${reviewLikes.userId} = ${currentUserId})`,
+      })
+      .from(raceReviews)
+      .innerJoin(user, eq(raceReviews.userId, user.id))
+      .innerJoin(races, eq(raceReviews.raceId, races.id))
+      .innerJoin(follows, eq(follows.followingId, raceReviews.userId))
+      .leftJoin(reviewLikes, eq(reviewLikes.reviewId, raceReviews.id))
+      .where(eq(follows.userId, currentUserId))
+      .groupBy(
+        raceReviews.id,
+        raceReviews.rating,
+        raceReviews.comment,
+        raceReviews.createdAt,
+        user.name,
+        user.id,
+        user.image,
+        raceReviews.raceId,
+        races.name,
+        races.slug
+      )
+      .orderBy(desc(raceReviews.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Get total count for pagination metadata
+    const [totalResult] = await db
+      .select({ total: count() })
+      .from(raceReviews)
+      .innerJoin(follows, eq(follows.followingId, raceReviews.userId))
+      .where(eq(follows.userId, currentUserId));
+
+    const total = Number(totalResult.total);
+    const totalPages = Math.ceil(total / limit);
+
+    // Transform the results to match frontend Review type
+    const reviewsWithLikes = reviews.map((review) => ({
+      id: review.id,
+      author: review.author || "Anonymous",
+      authorId: review.authorId,
+      avatarUrl: review.avatarUrl || "",
+      rating: review.rating,
+      text: review.comment || "",
+      date: review.createdAt.toISOString(),
+      raceId: review.raceId,
+      raceName: review.raceName,
+      raceSlug: review.raceSlug,
+      likeCount: review.likeCount || 0,
+      isLikedByUser: review.isLikedByUser || false,
+    }));
+
+    return c.json({
+      reviews: reviewsWithLikes,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch following feed:", error);
+    return c.json({ error: "Failed to fetch following feed" }, 500);
+  }
+});
+
+// Get user suggestions for discovery (protected)
+app.get("/api/users/suggestions", async (c) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const currentUserId = session.user.id;
+  const limit = parseInt(c.req.query("limit") || "10");
+
+  try {
+    // Get users who have written reviews, ordered by activity, excluding:
+    // 1. Current user
+    // 2. Users already being followed
+    const suggestions = await db
+      .select({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        image: user.image,
+        followerCount: user.followerCount,
+        followingCount: user.followingCount,
+        reviewCount: sql<number>`count(distinct ${raceReviews.id})::int`,
+        latestReviewDate: sql<string>`max(${raceReviews.createdAt})`,
+      })
+      .from(user)
+      .innerJoin(raceReviews, eq(raceReviews.userId, user.id))
+      .leftJoin(
+        follows,
+        and(
+          eq(follows.userId, currentUserId),
+          eq(follows.followingId, user.id)
+        )
+      )
+      .where(
+        and(
+          sql`${user.id} != ${currentUserId}`, // Exclude current user
+          sql`${follows.id} IS NULL` // Exclude already followed users
+        )
+      )
+      .groupBy(
+        user.id,
+        user.name,
+        user.email,
+        user.image,
+        user.followerCount,
+        user.followingCount
+      )
+      .orderBy(
+        desc(sql<number>`count(distinct ${raceReviews.id})`), // Most active reviewers first
+        desc(sql<string>`max(${raceReviews.createdAt})`) // Then by most recent activity
+      )
+      .limit(limit);
+
+    // Transform the results
+    const suggestedUsers = suggestions.map((suggestion) => ({
+      id: suggestion.id,
+      name: suggestion.name || "Anonymous",
+      email: suggestion.email,
+      image: suggestion.image || "",
+      followerCount: suggestion.followerCount || 0,
+      followingCount: suggestion.followingCount || 0,
+      reviewCount: suggestion.reviewCount || 0,
+      latestReviewDate: suggestion.latestReviewDate,
+    }));
+
+    return c.json({
+      suggestions: suggestedUsers,
+      total: suggestedUsers.length,
+    });
+  } catch (error) {
+    console.error("Failed to fetch user suggestions:", error);
+    return c.json({ error: "Failed to fetch user suggestions" }, 500);
   }
 });
 
