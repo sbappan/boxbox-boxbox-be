@@ -36,6 +36,13 @@
       "when": 1752328349699,
       "tag": "0004_black_phil_sheldon",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1752412123318,
+      "tag": "0005_late_golden_guardian",
+      "breakpoints": true
     }
   ]
 }
